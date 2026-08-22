@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
 TALAST.app | طلاست‌اپ
-نسخه اصلاح‌شده برای Render
+نسخه نهایی سازگار با Render Free (Web Service)
 """
 
 import os
 import sqlite3
 import asyncio
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, List
@@ -14,6 +15,7 @@ from typing import Optional, Dict, List
 from dotenv import load_dotenv
 load_dotenv()
 
+from flask import Flask
 from bale import Bot, Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, MenuKeyboardMarkup, MenuKeyboardButton
 
 # ==================== تنظیمات ====================
@@ -34,7 +36,18 @@ INVOICE_PREFIX = "TALAST"
 
 DB_PATH = Path("talast.db")
 
-# ==================== دیتابیس ====================
+# ==================== Flask برای باز نگه داشتن پورت ====================
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "TALAST.app Bot is running ✅"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+# ==================== دیتابیس و بقیه کد (همان قبلی) ====================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -152,7 +165,6 @@ def create_invoice(order_id: int, content: str) -> str:
        (order_id, inv_number, content))
     return inv_number
 
-# ==================== قیمت ====================
 current_price = {"source": 21351000, "final": None, "updated_at": None}
 
 def calc_final(source: float) -> float:
@@ -171,7 +183,6 @@ def set_manual_price(source: float) -> float:
     save_price(source, final)
     return final
 
-# ==================== منطق ====================
 async def can_buy(user_id: int, total: float):
     if total <= MAX_BUY_WITHOUT_WALLET:
         return True, "خرید بدون نیاز به کیف پول"
@@ -202,24 +213,21 @@ def make_invoice_text(order: dict, user: dict, inv_number: str) -> str:
 ╚══════════════════════════════════════╝
 
 شماره فاکتور: {inv_number}
-تاریخ صدور: {now}
+تاریخ: {now}
 وضعیت: تأیید شده ✅
 
-مشخصات خریدار:
-نام: {user.get('full_name') or '—'}
+خریدار: {user.get('full_name') or '—'}
 آیدی: {order['user_id']}
 
-جزئیات سفارش:
-مقدار: {order['grams']} گرم (۱۸ عیار)
+مقدار: {order['grams']} گرم
 قیمت واحد: {order['unit_price']:,} تومان
 مبلغ کل: {order['total_amount']:,} تومان
 
-تحویل فیزیکی: اولین روز کاری بعد از تأیید
+تحویل: اولین روز کاری بعد از تأیید
 تاریخ تقریبی: {delivery}
 پشتیبانی: {SUPPORT_USERNAME}
 """.strip()
 
-# ==================== کیبورد ====================
 def main_menu():
     kb = MenuKeyboardMarkup()
     kb.add(MenuKeyboardButton("💰 قیمت لحظه‌ای"), MenuKeyboardButton("🛒 خرید طلا"))
@@ -265,7 +273,6 @@ async def on_message(message: Message):
     text = message.text.strip()
     user_id = user.user_id
 
-    # دستورات
     if text == "/start":
         get_or_create_user(user_id, user.first_name, user.username)
         await message.reply(
@@ -285,14 +292,10 @@ async def on_message(message: Message):
         await message.reply("🛠 پنل مدیریت", components=kb)
         return
 
-    # منوی اصلی
     if text == "💰 قیمت لحظه‌ای":
         p = get_price()
         await message.reply(
-            f"📊 قیمت لحظه‌ای\n\n"
-            f"پایه: `{p['source']:,}`\n"
-            f"نهایی (+۱٪): `{p['final']:,}` تومان / گرم\n"
-            f"🕐 {p['updated_at'][11:19]}",
+            f"📊 قیمت لحظه‌ای\n\nپایه: `{p['source']:,}`\nنهایی (+۱٪): `{p['final']:,}` تومان / گرم\n🕐 {p['updated_at'][11:19]}",
             components=price_kb()
         )
         return
@@ -324,7 +327,6 @@ async def on_message(message: Message):
         await message.reply(f"پشتیبانی: {SUPPORT_USERNAME}\nسایت: https://{WEBSITE}")
         return
 
-    # حالت‌ها
     if user_states.get(user_id) == "waiting_grams":
         try:
             grams = float(text.replace(",", "."))
@@ -361,10 +363,7 @@ async def on_callback(callback: CallbackQuery):
 
     if data == "refresh_price":
         p = get_price()
-        await callback.message.edit(
-            f"📊 قیمت به‌روز شد\n💰 `{p['final']:,}` تومان / گرم",
-            components=price_kb()
-        )
+        await callback.message.edit(f"📊 قیمت به‌روز شد\n💰 `{p['final']:,}` تومان / گرم", components=price_kb())
         await callback.answer("✅")
         return
 
@@ -388,25 +387,20 @@ async def on_callback(callback: CallbackQuery):
             await callback.answer()
             return
 
-        # اطلاع به ادمین
         for admin in ADMIN_IDS:
             try:
                 await callback.bot.send_message(
                     admin,
-                    f"🆕 سفارش #{result['order_id']}\nکاربر: {callback.author.first_name}\n"
-                    f"مقدار: {result['grams']}g\nمبلغ: {result['total']:,}",
+                    f"🆕 سفارش #{result['order_id']}\nکاربر: {callback.author.first_name}\nمقدار: {result['grams']}g\nمبلغ: {result['total']:,}",
                     components=admin_order_kb(result["order_id"])
                 )
             except:
                 pass
 
-        await callback.message.edit(
-            f"✅ سفارش #{result['order_id']} ثبت شد.\nبعد از تأیید ادمین فاکتور ارسال می‌شود."
-        )
+        await callback.message.edit(f"✅ سفارش #{result['order_id']} ثبت شد.\nبعد از تأیید ادمین فاکتور ارسال می‌شود.")
         await callback.answer("ثبت شد")
         return
 
-    # ادمین
     if user_id not in ADMIN_IDS:
         await callback.answer("دسترسی ندارید", show_alert=True)
         return
@@ -422,11 +416,7 @@ async def on_callback(callback: CallbackQuery):
             text += f"#{o['id']} | {o.get('full_name') or o['user_id']} | {o['grams']}g | {o['total_amount']:,}\n"
         await callback.message.edit(text)
         for o in orders[:5]:
-            await callback.bot.send_message(
-                user_id,
-                f"سفارش #{o['id']} – {o['grams']}g – {o['total_amount']:,}",
-                components=admin_order_kb(o["id"])
-            )
+            await callback.bot.send_message(user_id, f"سفارش #{o['id']} – {o['grams']}g – {o['total_amount']:,}", components=admin_order_kb(o["id"]))
         await callback.answer()
         return
 
@@ -475,4 +465,10 @@ async def on_callback(callback: CallbackQuery):
 # ==================== اجرا ====================
 if __name__ == "__main__":
     print(f"در حال راه‌اندازی {BRAND_NAME} ...")
+
+    # Flask را در ترد جداگانه اجرا کن
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+
+    # ربات را اجرا کن
     client.run()
