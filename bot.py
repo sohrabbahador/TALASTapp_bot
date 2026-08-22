@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TALAST.app | طلاست‌اپ
-نسخه پایدار و حرفه‌ای - سازگار با Render Free
+نسخه نهایی پایدار - رفع کامل خطای کیبورد
 """
 
 import os
@@ -39,7 +39,7 @@ INVOICE_PREFIX = "TALAST"
 
 DB_PATH = Path("talast.db")
 
-# ==================== Flask (برای باز نگه داشتن پورت) ====================
+# ==================== Flask ====================
 app = Flask(__name__)
 
 @app.route("/")
@@ -122,8 +122,7 @@ def get_or_create_user(user_id: int, full_name: str = None, username: str = None
     if row:
         return dict(row)
     db("INSERT INTO users (id, full_name, username) VALUES (?, ?, ?)", (user_id, full_name, username))
-    row = db("SELECT * FROM users WHERE id = ?", (user_id,), fetch="one")
-    return dict(row)
+    return dict(db("SELECT * FROM users WHERE id = ?", (user_id,), fetch="one"))
 
 def get_wallet(user_id: int) -> float:
     row = db("SELECT wallet_balance FROM users WHERE id = ?", (user_id,), fetch="one")
@@ -134,15 +133,9 @@ def change_wallet(user_id: int, amount: float, type_: str, order_id: int = None,
     db("INSERT INTO wallet_transactions (user_id, amount, type, order_id, description) VALUES (?, ?, ?, ?, ?)",
        (user_id, amount, type_, order_id, desc))
 
-def save_price(source: float, final: float):
-    db("INSERT INTO price_history (source_price, final_price) VALUES (?, ?)", (source, final))
-
 def create_order(user_id: int, grams: float, unit_price: float, total: float) -> int:
-    return db(
-        "INSERT INTO orders (user_id, grams, unit_price, total_amount) VALUES (?, ?, ?, ?)",
-        (user_id, grams, unit_price, total),
-        fetch="lastrowid"
-    )
+    return db("INSERT INTO orders (user_id, grams, unit_price, total_amount) VALUES (?, ?, ?, ?)",
+              (user_id, grams, unit_price, total), fetch="lastrowid")
 
 def get_order(order_id: int) -> Optional[dict]:
     row = db("SELECT * FROM orders WHERE id = ?", (order_id,), fetch="one")
@@ -156,13 +149,9 @@ def update_order_status(order_id: int, status: str, note: str = None):
         db("UPDATE orders SET status=?, admin_note=? WHERE id=?", (status, note, order_id))
 
 def get_pending_orders() -> List[dict]:
-    rows = db("""
-        SELECT o.*, u.full_name, u.username 
-        FROM orders o 
-        LEFT JOIN users u ON o.user_id = u.id 
-        WHERE o.status = 'pending' 
-        ORDER BY o.id DESC
-    """, fetch="all")
+    rows = db("""SELECT o.*, u.full_name, u.username FROM orders o 
+                 LEFT JOIN users u ON o.user_id = u.id 
+                 WHERE o.status = 'pending' ORDER BY o.id DESC""", fetch="all")
     return [dict(r) for r in rows] if rows else []
 
 def get_user_orders(user_id: int) -> List[dict]:
@@ -176,11 +165,7 @@ def create_invoice(order_id: int, content: str) -> str:
     return inv_number
 
 # ==================== قیمت ====================
-current_price = {
-    "source": 21351000,
-    "final": None,
-    "updated_at": None
-}
+current_price = {"source": 21351000, "final": None, "updated_at": None}
 
 def calc_final(source: float) -> float:
     return round(source * (1 + COMMISSION_PERCENT / 100))
@@ -194,15 +179,11 @@ def get_price() -> dict:
 def set_manual_price(source: float) -> float:
     global current_price
     final = calc_final(source)
-    current_price = {
-        "source": source,
-        "final": final,
-        "updated_at": datetime.now().isoformat()
-    }
-    save_price(source, final)
+    current_price = {"source": source, "final": final, "updated_at": datetime.now().isoformat()}
+    db("INSERT INTO price_history (source_price, final_price) VALUES (?, ?)", (source, final))
     return final
 
-# ==================== منطق کسب‌وکار ====================
+# ==================== منطق ====================
 async def can_buy(user_id: int, total: float):
     if total <= MAX_BUY_WITHOUT_WALLET:
         return True, "خرید بدون نیاز به کیف پول"
@@ -213,32 +194,20 @@ async def can_buy(user_id: int, total: float):
 
 async def place_order(user_id: int, grams: float):
     if grams < MIN_GRAMS:
-        return {"ok": False, "message": f"حداقل مقدار خرید {MIN_GRAMS} گرم است"}
-    
+        return {"ok": False, "message": f"حداقل {MIN_GRAMS} گرم"}
     price = get_price()["final"]
     total = round(grams * price)
-    
     ok, msg = await can_buy(user_id, total)
     if not ok:
         return {"ok": False, "message": msg}
-    
     order_id = create_order(user_id, grams, price, total)
-    
     if total > MAX_BUY_WITHOUT_WALLET:
-        change_wallet(user_id, -total, "buy", order_id, f"خرید سفارش #{order_id}")
-    
-    return {
-        "ok": True,
-        "order_id": order_id,
-        "grams": grams,
-        "unit_price": price,
-        "total": total
-    }
+        change_wallet(user_id, -total, "buy", order_id, f"خرید #{order_id}")
+    return {"ok": True, "order_id": order_id, "grams": grams, "unit_price": price, "total": total}
 
 def make_invoice_text(order: dict, user: dict, inv_number: str) -> str:
     now = datetime.now().strftime("%Y/%m/%d - %H:%M")
     delivery = (datetime.now() + timedelta(days=1)).strftime("%Y/%m/%d")
-    
     return f"""
 ╔══════════════════════════════════════╗
 ║     فاکتور رسمی {BRAND_NAME}      ║
@@ -248,28 +217,28 @@ def make_invoice_text(order: dict, user: dict, inv_number: str) -> str:
 تاریخ صدور   : {now}
 وضعیت        : تأیید شده ✅
 
-مشخصات خریدار:
-نام          : {user.get('full_name') or '—'}
+خریدار       : {user.get('full_name') or '—'}
 آیدی         : {order['user_id']}
 
-جزئیات سفارش:
-مقدار        : {order['grams']} گرم (۱۸ عیار)
+مقدار        : {order['grams']} گرم
 قیمت واحد    : {order['unit_price']:,} تومان
 مبلغ کل      : {order['total_amount']:,} تومان
 
-تحویل فیزیکی : اولین روز کاری بعد از تأیید
+تحویل        : اولین روز کاری بعد از تأیید
 تاریخ تقریبی : {delivery}
 
 پشتیبانی     : {SUPPORT_USERNAME}
-وب‌سایت      : {WEBSITE}
 """.strip()
 
-# ==================== کیبوردها (اصلاح‌شده) ====================
+# ==================== کیبوردها (اصلاح‌شده صحیح) ====================
 def main_menu():
     kb = MenuKeyboardMarkup()
-    kb.add(MenuKeyboardButton("💰 قیمت لحظه‌ای"), MenuKeyboardButton("🛒 خرید طلا"))
-    kb.add(MenuKeyboardButton("👤 موجودی من"), MenuKeyboardButton("📜 سفارش‌های من"))
-    kb.add(MenuKeyboardButton("📞 پشتیبانی"), MenuKeyboardButton("🌐 وب‌سایت"))
+    kb.add(MenuKeyboardButton("💰 قیمت لحظه‌ای"))
+    kb.add(MenuKeyboardButton("🛒 خرید طلا"))
+    kb.add(MenuKeyboardButton("👤 موجودی من"))
+    kb.add(MenuKeyboardButton("📜 سفارش‌های من"))
+    kb.add(MenuKeyboardButton("📞 پشتیبانی"))
+    kb.add(MenuKeyboardButton("🌐 وب‌سایت"))
     return kb
 
 def price_kb():
@@ -280,24 +249,20 @@ def price_kb():
 
 def confirm_kb(grams: float):
     kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton(text="✅ تأیید و ثبت سفارش", callback_data=f"confirm:{grams}"),
-        InlineKeyboardButton(text="❌ انصراف", callback_data="cancel")
-    )
+    kb.add(InlineKeyboardButton(text="✅ تأیید و ثبت", callback_data=f"confirm:{grams}"))
+    kb.add(InlineKeyboardButton(text="❌ انصراف", callback_data="cancel"), row=2)
     return kb
 
 def admin_order_kb(order_id: int):
     kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton(text="✅ تأیید فاکتور", callback_data=f"approve:{order_id}"),
-        InlineKeyboardButton(text="❌ رد سفارش", callback_data=f"reject:{order_id}")
-    )
+    kb.add(InlineKeyboardButton(text="✅ تأیید فاکتور", callback_data=f"approve:{order_id}"))
+    kb.add(InlineKeyboardButton(text="❌ رد سفارش", callback_data=f"reject:{order_id}"), row=2)
     return kb
 
 def admin_panel_kb():
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton(text="📋 سفارش‌های در انتظار", callback_data="admin_pending"))
-    kb.add(InlineKeyboardButton(text="💰 تنظیم قیمت دستی", callback_data="admin_set_price"), row=2)
+    kb.add(InlineKeyboardButton(text="💰 تنظیم قیمت", callback_data="admin_set_price"), row=2)
     return kb
 
 # ==================== ربات ====================
@@ -308,8 +273,8 @@ user_states: Dict[int, str] = {}
 async def on_ready():
     init_db()
     get_price()
-    print(f"✅ ربات {BRAND_NAME} با موفقیت راه‌اندازی شد")
-    print(f"👤 ادمین‌ها: {ADMIN_IDS}")
+    print(f"✅ ربات {BRAND_NAME} آماده است")
+    print(f"ادمین‌ها: {ADMIN_IDS}")
 
 @client.listen("on_message")
 async def on_message(message: Message):
@@ -320,13 +285,12 @@ async def on_message(message: Message):
     text = message.text.strip()
     user_id = user.user_id
 
-    # ---------- دستورات ----------
     if text == "/start":
         get_or_create_user(user_id, user.first_name, user.username)
         await message.reply(
             f"سلام {user.first_name} 👋\n\n"
             f"به **{BRAND_NAME}** خوش آمدید.\n"
-            f"مرکز تخصصی فروش طلای آب‌شده با تحویل فیزیکی.\n\n"
+            f"مرکز فروش طلای آب‌شده با تحویل فیزیکی.\n\n"
             f"پشتیبانی: {SUPPORT_USERNAME}\n"
             f"وب‌سایت: {WEBSITE}",
             components=main_menu()
@@ -335,84 +299,63 @@ async def on_message(message: Message):
 
     if text == "/admin":
         if user_id not in ADMIN_IDS:
-            await message.reply("⛔️ شما دسترسی به پنل مدیریت ندارید.")
+            await message.reply("⛔️ دسترسی ندارید.")
             return
-        await message.reply("🛠 **پنل مدیریت طلاست‌اپ**", components=admin_panel_kb())
+        await message.reply("🛠 پنل مدیریت طلاست‌اپ", components=admin_panel_kb())
         return
 
-    # ---------- منوی اصلی ----------
     if text == "💰 قیمت لحظه‌ای":
         p = get_price()
         await message.reply(
-            f"📊 **قیمت لحظه‌ای طلای آب‌شده**\n\n"
-            f"قیمت پایه     : `{p['source']:,}` تومان\n"
-            f"قیمت نهایی (+۱٪) : `{p['final']:,}` تومان / گرم\n\n"
-            f"🕐 آخرین به‌روزرسانی: {p['updated_at'][11:19]}",
+            f"📊 **قیمت لحظه‌ای**\n\n"
+            f"پایه: `{p['source']:,}`\n"
+            f"نهایی (+۱٪): `{p['final']:,}` تومان / گرم\n"
+            f"🕐 {p['updated_at'][11:19]}",
             components=price_kb()
         )
         return
 
     if text == "🛒 خرید طلا":
         user_states[user_id] = "waiting_grams"
-        await message.reply(
-            f"لطفاً مقدار مورد نظر را به **گرم** وارد کنید:\n"
-            f"(حداقل {MIN_GRAMS} گرم)"
-        )
+        await message.reply(f"مقدار را به گرم وارد کنید (حداقل {MIN_GRAMS}):")
         return
 
     if text == "👤 موجودی من":
         get_or_create_user(user_id, user.first_name, user.username)
         balance = get_wallet(user_id)
-        await message.reply(f"💰 **موجودی کیف پول شما:**\n`{balance:,.0f}` تومان")
+        await message.reply(f"💰 موجودی شما: `{balance:,.0f}` تومان")
         return
 
     if text == "📜 سفارش‌های من":
         orders = get_user_orders(user_id)
         if not orders:
-            await message.reply("شما هنوز سفارشی ثبت نکرده‌اید.")
+            await message.reply("سفارشی ندارید.")
             return
-        
-        lines = ["📜 **آخرین سفارش‌های شما:**\n"]
+        lines = ["📜 سفارش‌های شما:\n"]
         for o in orders:
-            status_map = {
-                "pending": "⏳ در انتظار تأیید",
-                "approved": "✅ تأیید شده",
-                "rejected": "❌ رد شده"
-            }
-            status = status_map.get(o["status"], o["status"])
-            lines.append(f"• #{o['id']} | {o['grams']} گرم | {o['total_amount']:,} تومان | {status}")
-        
+            status = {"pending": "⏳", "approved": "✅", "rejected": "❌"}.get(o["status"], o["status"])
+            lines.append(f"#{o['id']} | {o['grams']}g | {o['total_amount']:,} | {status}")
         await message.reply("\n".join(lines))
         return
 
     if text in ["📞 پشتیبانی", "🌐 وب‌سایت"]:
-        await message.reply(
-            f"📞 پشتیبانی: {SUPPORT_USERNAME}\n"
-            f"🌐 وب‌سایت: https://{WEBSITE}"
-        )
+        await message.reply(f"پشتیبانی: {SUPPORT_USERNAME}\nسایت: https://{WEBSITE}")
         return
 
-    # ---------- حالت‌ها ----------
     if user_states.get(user_id) == "waiting_grams":
         try:
             grams = float(text.replace(",", "."))
             if grams <= 0:
                 raise ValueError
-        except ValueError:
-            await message.reply("❌ مقدار وارد شده نامعتبر است. لطفاً یک عدد مثبت وارد کنید.")
+        except:
+            await message.reply("❌ عدد نامعتبر است.")
             return
 
         price = get_price()["final"]
         total = round(grams * price)
         ok, msg = await can_buy(user_id, total)
-
         await message.reply(
-            f"📋 **پیش‌فاکتور خرید**\n\n"
-            f"مقدار        : {grams} گرم\n"
-            f"قیمت واحد    : {price:,} تومان\n"
-            f"مبلغ کل      : {total:,} تومان\n\n"
-            f"{msg}\n\n"
-            f"آیا تأیید می‌کنید؟",
+            f"📋 پیش‌فاکتور\n\nمقدار: {grams} گرم\nقیمت: {price:,}\nمبلغ: {total:,}\n\n{msg}",
             components=confirm_kb(grams)
         )
         user_states[user_id] = None
@@ -422,14 +365,10 @@ async def on_message(message: Message):
         try:
             source = float(text.replace(",", "").replace("٬", ""))
             final = set_manual_price(source)
-            await message.reply(
-                f"✅ قیمت با موفقیت تنظیم شد\n\n"
-                f"قیمت پایه     : {source:,} تومان\n"
-                f"قیمت نهایی (+۱٪) : {final:,} تومان"
-            )
+            await message.reply(f"✅ قیمت تنظیم شد\nپایه: {source:,}\nنهایی: {final:,}")
             user_states[user_id] = None
-        except ValueError:
-            await message.reply("❌ عدد وارد شده نامعتبر است.")
+        except:
+            await message.reply("❌ عدد نامعتبر")
         return
 
 @client.listen("on_callback")
@@ -438,160 +377,110 @@ async def on_callback(callback: CallbackQuery):
     user_id = callback.author.user_id
     bot = callback.bot
 
-    # ---------- کاربر عادی ----------
     if data == "refresh_price":
         p = get_price()
-        await callback.message.edit(
-            f"📊 **قیمت لحظه‌ای به‌روز شد**\n\n"
-            f"💰 `{p['final']:,}` تومان / گرم",
-            components=price_kb()
-        )
-        await callback.answer("✅ به‌روز شد")
+        await callback.message.edit(f"📊 قیمت به‌روز شد\n💰 `{p['final']:,}` تومان / گرم", components=price_kb())
+        await callback.answer("✅")
         return
 
     if data == "buy_start":
         user_states[user_id] = "waiting_grams"
-        await callback.message.reply(f"لطفاً مقدار مورد نظر را به گرم وارد کنید (حداقل {MIN_GRAMS}):")
+        await callback.message.reply(f"مقدار را به گرم وارد کنید (حداقل {MIN_GRAMS}):")
         await callback.answer()
         return
 
     if data == "cancel":
-        await callback.message.edit("❌ عملیات لغو شد.")
+        await callback.message.edit("❌ لغو شد.")
         await callback.answer()
         return
 
     if data.startswith("confirm:"):
-        try:
-            grams = float(data.split(":")[1])
-        except:
-            await callback.answer("خطا در داده", show_alert=True)
-            return
-
+        grams = float(data.split(":")[1])
         get_or_create_user(user_id, callback.author.first_name, callback.author.username)
         result = await place_order(user_id, grams)
-
         if not result["ok"]:
             await callback.message.edit(f"❌ {result['message']}")
             await callback.answer()
             return
 
-        # اطلاع به ادمین‌ها
-        for admin_id in ADMIN_IDS:
+        for admin in ADMIN_IDS:
             try:
                 await bot.send_message(
-                    admin_id,
-                    f"🆕 **سفارش جدید #{result['order_id']}**\n\n"
-                    f"کاربر: {callback.author.first_name}\n"
-                    f"مقدار: {result['grams']} گرم\n"
-                    f"مبلغ: {result['total']:,} تومان",
+                    admin,
+                    f"🆕 سفارش #{result['order_id']}\nکاربر: {callback.author.first_name}\nمقدار: {result['grams']}g\nمبلغ: {result['total']:,}",
                     components=admin_order_kb(result["order_id"])
                 )
-            except Exception as e:
-                print(f"خطا در ارسال به ادمین {admin_id}: {e}")
+            except:
+                pass
 
-        await callback.message.edit(
-            f"✅ سفارش شما با شماره **#{result['order_id']}** با موفقیت ثبت شد.\n\n"
-            f"پس از تأیید ادمین، فاکتور رسمی برای شما ارسال خواهد شد."
-        )
-        await callback.answer("سفارش ثبت شد")
+        await callback.message.edit(f"✅ سفارش #{result['order_id']} ثبت شد.\nبعد از تأیید ادمین فاکتور ارسال می‌شود.")
+        await callback.answer("ثبت شد")
         return
 
-    # ---------- بخش ادمین ----------
     if user_id not in ADMIN_IDS:
-        await callback.answer("⛔️ دسترسی ندارید", show_alert=True)
+        await callback.answer("دسترسی ندارید", show_alert=True)
         return
 
     if data == "admin_pending":
         orders = get_pending_orders()
         if not orders:
-            await callback.message.edit("هیچ سفارشی در انتظار تأیید نیست.")
+            await callback.message.edit("سفارشی در انتظار نیست.")
             await callback.answer()
             return
-
-        text = "📋 **سفارش‌های در انتظار تأیید:**\n\n"
-        for o in orders[:12]:
+        text = "📋 سفارش‌های در انتظار:\n\n"
+        for o in orders[:10]:
             text += f"#{o['id']} | {o.get('full_name') or o['user_id']} | {o['grams']}g | {o['total_amount']:,}\n"
-
         await callback.message.edit(text)
-
-        for o in orders[:6]:
-            try:
-                await bot.send_message(
-                    user_id,
-                    f"سفارش #{o['id']} – {o['grams']} گرم – {o['total_amount']:,} تومان",
-                    components=admin_order_kb(o["id"])
-                )
-            except:
-                pass
+        for o in orders[:5]:
+            await bot.send_message(user_id, f"سفارش #{o['id']} – {o['grams']}g – {o['total_amount']:,}", components=admin_order_kb(o["id"]))
         await callback.answer()
         return
 
     if data == "admin_set_price":
         user_states[user_id] = "admin_price"
-        await callback.message.reply(
-            "لطفاً قیمت پایه (گرم ۱۸ نقدی سبز) را وارد کنید:\n"
-            "مثال: `21351000`"
-        )
+        await callback.message.reply("قیمت پایه را وارد کنید (مثال: 21351000)")
         await callback.answer()
         return
 
     if data.startswith("approve:"):
         order_id = int(data.split(":")[1])
         order = get_order(order_id)
-
         if not order or order["status"] != "pending":
-            await callback.answer("این سفارش قابل تأیید نیست", show_alert=True)
+            await callback.answer("قابل تأیید نیست", show_alert=True)
             return
-
-        update_order_status(order_id, "approved", "تأیید شده توسط ادمین")
+        update_order_status(order_id, "approved", "تأیید ادمین")
         user = get_or_create_user(order["user_id"])
         inv_number = create_invoice(order_id, "")
         inv_text = make_invoice_text(order, user, inv_number)
-
         db("UPDATE invoices SET content=? WHERE order_id=?", (inv_text, order_id))
-
         try:
-            await bot.send_message(
-                order["user_id"],
-                f"✅ سفارش شما تأیید شد!\n\n{inv_text}"
-            )
-        except Exception as e:
-            print(f"خطا در ارسال فاکتور: {e}")
-
+            await bot.send_message(order["user_id"], f"✅ سفارش تأیید شد!\n\n{inv_text}")
+        except:
+            pass
         await callback.message.edit(f"✅ سفارش #{order_id} تأیید و فاکتور ارسال شد.")
-        await callback.answer("تأیید شد")
+        await callback.answer("انجام شد")
         return
 
     if data.startswith("reject:"):
         order_id = int(data.split(":")[1])
         order = get_order(order_id)
-
         if not order or order["status"] != "pending":
-            await callback.answer("این سفارش قابل رد نیست", show_alert=True)
+            await callback.answer("قابل رد نیست", show_alert=True)
             return
-
-        update_order_status(order_id, "rejected", "رد شده توسط ادمین")
-
-        # بازگشت وجه در صورت کسر از کیف پول
+        update_order_status(order_id, "rejected", "رد ادمین")
         if order["total_amount"] > MAX_BUY_WITHOUT_WALLET:
-            change_wallet(order["user_id"], order["total_amount"], "refund", order_id, f"بازگشت وجه سفارش #{order_id}")
-
+            change_wallet(order["user_id"], order["total_amount"], "refund", order_id, f"بازگشت #{order_id}")
         try:
             await bot.send_message(order["user_id"], f"❌ سفارش #{order_id} رد شد.")
         except:
             pass
-
         await callback.message.edit(f"❌ سفارش #{order_id} رد شد.")
         await callback.answer("رد شد")
         return
 
 # ==================== اجرا ====================
 if __name__ == "__main__":
-    print(f"🚀 در حال راه‌اندازی {BRAND_NAME} ...")
-
-    # اجرای Flask در ترد جداگانه
+    print(f"🚀 راه‌اندازی {BRAND_NAME} ...")
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-
-    # اجرای ربات
     client.run()
